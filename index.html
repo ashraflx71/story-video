@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>مولد فيديو من القصة</title>
+<style>
+  *{box-sizing:border-box}
+  body{margin:0;padding:12px;font-family:Arial,sans-serif;background:#111;color:#fff}
+  h1{font-size:18px;text-align:center;margin:0 0 12px}
+  .box{background:#1c1c1c;border-radius:10px;padding:10px;margin-bottom:10px}
+  textarea,select,input[type=number]{width:100%;padding:10px;border-radius:6px;border:1px solid #444;background:#222;color:#fff;font-size:16px}
+  textarea{min-height:150px}
+  label{display:block;margin-top:8px;font-size:14px;color:#ccc}
+  canvas{width:100%;max-height:70vh;object-fit:contain;background:#000;border-radius:8px;display:block}
+  .row{display:flex;gap:8px;margin-top:8px}
+  button{flex:1;padding:12px;border:0;border-radius:8px;background:#2d7ff9;color:#fff;font-size:15px}
+  button.alt{background:#1fa35b}
+  #status{font-size:13px;color:#9f9;min-height:18px;margin-top:6px}
+</style>
+</head>
+<body>
+<h1>🎬 مولد فيديو من القصة</h1>
+
+<div class="box">
+  <textarea id="story" placeholder="اكتب قصتك هنا. كل جملة تصبح مشهداً، أو افصل المشاهد بسطر فارغ.">كان يا ما كان، في قرية صغيرة، طفل يحب النجوم.
+كل ليلة كان يصعد إلى سطح بيته ليراقب السماء.
+وفي ليلة هادئة سقط نجم قريب منه.
+ركض الطفل إليه فوجد ضوءاً صغيراً يهمس: شكراً لأنك لم تنسَني.
+ومنذ ذلك اليوم صار للطفل نجم يرافقه كل ليلة.</textarea>
+
+  <label>مدة كل مشهد (ثوانٍ)</label>
+  <input type="number" id="dur" value="4" min="2" max="15">
+
+  <label>شكل الفيديو</label>
+  <select id="ratio">
+    <option value="9:16">طولي 9:16 (تيك توك / ريلز)</option>
+    <option value="16:9">عرضي 16:9 (يوتيوب)</option>
+    <option value="1:1">مربع 1:1</option>
+  </select>
+
+  <label><input type="checkbox" id="narrate"> قراءة صوتية أثناء المعاينة (لا تدخل في التصدير)</label>
+
+  <div class="row">
+    <button id="previewBtn">▶ معاينة</button>
+    <button id="exportBtn" class="alt">⬇ تصدير</button>
+  </div>
+  <div id="status">اكتب قصتك ثم اضغط معاينة</div>
+</div>
+
+<div class="box"><canvas id="c"></canvas></div>
+
+<script>
+(() => {
+  const $ = id => document.getElementById(id);
+  const canvas = $('c'), ctx = canvas.getContext('2d');
+  const statusEl = $('status');
+  const setStatus = m => statusEl.textContent = m;
+
+  const PALETTES = [
+    ['#1e3c72','#2a5298'], ['#42275a','#734b6d'], ['#134e5e','#2f8f6b'],
+    ['#4a00e0','#8e2de2'], ['#c31432','#240b36'], ['#e65c00','#f9d423']
+  ];
+  const SIZES = { '9:16':[540,960], '16:9':[960,540], '1:1':[720,720] };
+
+  let scenes = [], dur = 4, running = false, raf = 0, recorder = null, chunks = [];
+
+  function setSize() {
+    const [w,h] = SIZES[$('ratio').value];
+    canvas.width = w; canvas.height = h;
+  }
+
+  function splitScenes(text) {
+    text = text.trim();
+    if (!text) return [];
+    const blocks = text.split(/\n\s*\n/).map(s => s.trim()).filter(Boolean);
+    if (blocks.length > 1) return blocks;
+    return (text.match(/[^.!؟?\n]+[.!؟?]*/g) || []).map(s => s.trim()).filter(Boolean);
+  }
+
+  function wrap(text, maxW) {
+    const words = text.split(/\s+/), lines = [];
+    let line = '';
+    for (const w of words) {
+      const test = line ? line + ' ' + w : w;
+      if (ctx.measureText(test).width > maxW && line) { lines.push(line); line = w; }
+      else line = test;
+    }
+    if (line) lines.push(line);
+    return lines;
+  }
+
+  function drawScene(i, local) {
+    const W = canvas.width, H = canvas.height;
+    const [c1, c2] = PALETTES[i % PALETTES.length];
+
+    // خلفية متدرجة
+    const g = ctx.createLinearGradient(0, 0, W, H);
+    g.addColorStop(0, c1); g.addColorStop(1, c2);
+    ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+
+    // دوائر متحركة
+    for (let k = 0; k < 6; k++) {
+      const x = (Math.sin(local * 0.5 + k * 1.7 + i) * 0.5 + 0.5) * W;
+      const y = (Math.cos(local * 0.4 + k * 2.3) * 0.5 + 0.5) * H;
+      const r = (0.08 + 0.05 * (k % 3)) * Math.min(W, H);
+      ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(255,255,255,0.08)'; ctx.fill();
+    }
+
+    // النص: يظهر سطراً بعد سطر
+    const fs = Math.round(Math.min(W, H) / 11);
+    ctx.font = 'bold ' + fs + 'px Arial, Tahoma, sans-serif';
+    ctx.direction = 'rtl';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    const lines = wrap(scenes[i], W * 0.82);
+    const lh = fs * 1.5;
+    const startY = H / 2 - (lines.length - 1) * lh / 2;
+    const progress = Math.min(1, local / (dur * 0.6));
+    const fadeOut = Math.min(1, (dur - local) / 0.4);
+
+    lines.forEach((ln, k) => {
+      const lineStart = k / lines.length, lineEnd = (k + 1) / lines.length;
+      let a = (progress - lineStart) / (lineEnd - lineStart);
+      a = Math.max(0, Math.min(1, a)) * fadeOut;
+      ctx.globalAlpha = a;
+      const y = startY + k * lh + (1 - a) * 14;
+      ctx.lineWidth = fs / 8; ctx.strokeStyle = 'rgba(0,0,0,0.6)';
+      ctx.strokeText(ln, W / 2, y);
+      ctx.fillStyle = '#fff';
+      ctx.fillText(ln, W / 2, y);
+    });
+    ctx.globalAlpha = 1;
+
+    // شريط التقدم وعدّاد المشاهد
+    ctx.fillStyle = 'rgba(255,255,255,0.8)';
+    ctx.fillRect(0, H - 8, W * ((i + local / dur) / scenes.length), 8);
+    ctx.font = (fs * 0.4) + 'px Arial';
+    ctx.fillText((i + 1) + ' / ' + scenes.length, W / 2, H - 30);
+  }
+
+  function stopAll() {
+    running = false;
+    cancelAnimationFrame(raf);
+    if ('speechSynthesis' in window) speechSynthesis.cancel();
+  }
+
+  function play(record) {
+    stopAll();
+    setSize();
+    dur = Math.max(2, Math.min(15, Number($('dur').value) || 4));
+    scenes = splitScenes($('story').value);
+    if (!scenes.length) { setStatus('اكتب قصة أولاً'); return; }
+
+    if (record) {
+      if (!canvas.captureStream || typeof MediaRecorder === 'undefined') {
+        setStatus('المتصفح لا يدعم التصدير. جرّب Chrome'); return;
+      }
+      const mime = ['video/mp4', 'video/webm;codecs=vp9', 'video/webm']
+        .find(t => MediaRecorder.isTypeSupported(t)) || '';
+      chunks = [];
+      try { recorder = new MediaRecorder(canvas.captureStream(30), mime ? { mimeType: mime } : undefined); }
+      catch (e) { setStatus('فشل بدء التصدير'); return; }
+      recorder.ondataavailable = e => { if (e.data.size) chunks.push(e.data); };
+      recorder.onstop = () => {
+        const type = recorder.mimeType || mime || 'video/webm';
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(new Blob(chunks, { type }));
+        a.download = 'story-video.' + (type.includes('mp4') ? 'mp4' : 'webm');
+        document.body.appendChild(a); a.click(); a.remove();
+        setStatus('تم التصدير ✓');
+      };
+      recorder.start();
+      setStatus('جاري التصدير... لا تغلق الصفحة');
+    } else {
+      setStatus('جاري المعاينة...');
+    }
+
+    const total = scenes.length * dur;
+    const t0 = performance.now();
+    let lastScene = -1;
+    running = true;
+
+    const tick = now => {
+      if (!running) return;
+      const t = (now - t0) / 1000;
+      if (t >= total) {
+        running = false;
+        if (record && recorder.state !== 'inactive') recorder.stop();
+        else setStatus('انتهت المعاينة');
+        return;
+      }
+      const i = Math.floor(t / dur);
+      if (i !== lastScene) {
+        lastScene = i;
+        if (!record && $('narrate').checked && 'speechSynthesis' in window) {
+          speechSynthesis.cancel();
+          const u = new SpeechSynthesisUtterance(scenes[i]);
+          u.lang = 'ar-SA';
+          speechSynthesis.speak(u);
+        }
+      }
+      drawScene(i, t - i * dur);
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+  }
+
+  $('previewBtn').addEventListener('click', () => play(false));
+  $('exportBtn').addEventListener('click', () => play(true));
+  $('ratio').addEventListener('change', () => { if (!running) setSize(); });
+  setSize();
+  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+})();
+</script>
+</body>
+</html>
